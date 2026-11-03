@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Visualizador de 3 câmeras RTSP (com áudio) - PySide6 / Qt Multimedia.
-
-- Botão "URLs" abre o diálogo para colar as 3 URLs completas (user:senha@ip:porta/path)
-- Clique em uma câmera: ocupa a janela toda (não é fullscreen). Clique de novo: volta às 3.
-- Scroll sobre a câmera: controla o volume (5% por passo). Padrão: 0%.
-"""
 import json
 import sys
 from pathlib import Path
@@ -13,13 +7,23 @@ from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMainWindow, QPushButton, QVBoxLayout, QWidget,
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 CONFIG = Path.home() / ".config" / "rtsp-viewer" / "config.json"
-VOLUME_STEP = 5  # % por "clique" da roda do mouse
-RETRY_MS = 5000  # reconecta sozinho se cair
+VOLUME_STEP = 5  # percent per mouse wheel notch
+RETRY_MS = 5000  # delay before reconnecting a dropped stream
 
 
 def load_urls():
@@ -33,7 +37,7 @@ def load_urls():
 def save_urls(urls):
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
     CONFIG.write_text(json.dumps({"urls": urls}, indent=2))
-    CONFIG.chmod(0o600)  # tem senha dentro
+    CONFIG.chmod(0o600)
 
 
 class CameraWidget(QWidget):
@@ -42,8 +46,8 @@ class CameraWidget(QWidget):
         self.name = name
         self.on_click = on_click
         self.url = ""
-        self.volume = 0  # 0..100
-        self.state = "sem URL"
+        self.volume = 0
+        self.state = "no URL"
 
         self.video = QVideoWidget()
         self.video.setStyleSheet("background: black;")
@@ -74,7 +78,6 @@ class CameraWidget(QWidget):
 
         self._refresh_label()
 
-    # ---- reprodução ----
     def set_url(self, url):
         self.url = url.strip()
         self.start()
@@ -83,32 +86,31 @@ class CameraWidget(QWidget):
         self.retry.stop()
         self.player.stop()
         if not self.url:
-            self.state = "sem URL"
+            self.state = "no URL"
             self._refresh_label()
             return
-        self.state = "conectando..."
+        self.state = "connecting..."
         self._refresh_label()
         self.player.setSource(QUrl(self.url))
         self.player.play()
 
     def _on_status(self, status):
-        S = QMediaPlayer.MediaStatus
-        if status in (S.LoadedMedia, S.BufferedMedia):
-            self.state = "ao vivo"
-        elif status in (S.LoadingMedia, S.StalledMedia, S.BufferingMedia):
-            self.state = "carregando..."
-        elif status == S.EndOfMedia:
-            self.state = "desconectado"
+        s = QMediaPlayer.MediaStatus
+        if status in (s.LoadedMedia, s.BufferedMedia):
+            self.state = "live"
+        elif status in (s.LoadingMedia, s.StalledMedia, s.BufferingMedia):
+            self.state = "loading..."
+        elif status == s.EndOfMedia:
+            self.state = "disconnected"
             self.retry.start()
         self._refresh_label()
 
     def _on_error(self, error, message):
-        self.state = f"erro: {message}"
+        self.state = f"error: {message}"
         self._refresh_label()
         if self.url:
             self.retry.start()
 
-    # ---- volume / mouse ----
     def set_volume(self, value):
         self.volume = max(0, min(100, value))
         self.audio.setVolume(self.volume / 100)
@@ -126,7 +128,9 @@ class CameraWidget(QWidget):
             if ev.type() == QEvent.Wheel:
                 dy = ev.angleDelta().y()
                 if dy:
-                    self.set_volume(self.volume + (VOLUME_STEP if dy > 0 else -VOLUME_STEP))
+                    self.set_volume(
+                        self.volume + (VOLUME_STEP if dy > 0 else -VOLUME_STEP)
+                    )
                 return True
         return super().eventFilter(obj, ev)
 
@@ -134,14 +138,14 @@ class CameraWidget(QWidget):
 class UrlDialog(QDialog):
     def __init__(self, urls, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("URLs das câmeras")
+        self.setWindowTitle("Camera URLs")
         self.setMinimumWidth(650)
         form = QFormLayout()
         self.edits = []
         for i, u in enumerate(urls, 1):
             e = QLineEdit(u)
-            e.setPlaceholderText("rtsp://user:senha@ip:porta/path")
-            form.addRow(f"Câmera {i}", e)
+            e.setPlaceholderText("rtsp://user:password@host:port/path")
+            form.addRow(f"Camera {i}", e)
             self.edits.append(e)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -157,56 +161,76 @@ class UrlDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Câmeras")
-        self.resize(1400, 400)
+        self.setWindowTitle("Cameras")
+        self.resize(1000, 800)
         self.focused = None
 
-        self.cams = [CameraWidget(f"Câmera {i}", self.toggle_focus) for i in (1, 2, 3)]
+        self.cams = [CameraWidget(f"Camera {i}", self.toggle_focus) for i in (1, 2, 3)]
 
-        btn = QPushButton("⚙ URLs")
-        btn.clicked.connect(self.edit_urls)
+        button = QPushButton("⚙ URLs")
+        button.clicked.connect(self.edit_urls)
         top = QHBoxLayout()
-        top.addWidget(btn)
+        top.addWidget(button)
         top.addStretch()
 
-        row = QHBoxLayout()
-        for c in self.cams:
-            row.addWidget(c, 1)
+        self.grid = QGridLayout()
+        self.grid.setContentsMargins(0, 0, 0, 0)
 
         central = QWidget()
-        lay = QVBoxLayout(central)
-        lay.setContentsMargins(4, 4, 4, 4)
-        lay.addLayout(top)
-        lay.addLayout(row, 1)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.addLayout(top)
+        layout.addLayout(self.grid, 1)
         self.setCentralWidget(central)
 
+        self.apply_layout()
+
         urls = load_urls()
-        for c, u in zip(self.cams, urls):
-            c.set_url(u)
+        for cam, url in zip(self.cams, urls):
+            cam.set_url(url)
         if not any(urls):
             QTimer.singleShot(0, self.edit_urls)
 
-    def toggle_focus(self, cam):
-        if self.focused is cam:
-            self.focused = None
-            for c in self.cams:
-                c.setVisible(True)
+    def apply_layout(self):
+        for cam in self.cams:
+            self.grid.removeWidget(cam)
+        for i in range(2):
+            self.grid.setRowStretch(i, 0)
+            self.grid.setColumnStretch(i, 0)
+
+        if self.focused:
+            for cam in self.cams:
+                cam.setVisible(cam is self.focused)
+            self.grid.addWidget(self.focused, 0, 0)
+            self.grid.setRowStretch(0, 1)
+            self.grid.setColumnStretch(0, 1)
         else:
-            self.focused = cam
-            for c in self.cams:
-                c.setVisible(c is cam)
+            for cam in self.cams:
+                cam.setVisible(True)
+            main, left, right = self.cams
+            self.grid.addWidget(main, 0, 0, 1, 2)
+            self.grid.addWidget(left, 1, 0)
+            self.grid.addWidget(right, 1, 1)
+            self.grid.setRowStretch(0, 3)
+            self.grid.setRowStretch(1, 1)
+            self.grid.setColumnStretch(0, 1)
+            self.grid.setColumnStretch(1, 1)
+
+    def toggle_focus(self, cam):
+        self.focused = None if self.focused is cam else cam
+        self.apply_layout()
 
     def edit_urls(self):
-        dlg = UrlDialog([c.url for c in self.cams], self)
-        if dlg.exec():
-            urls = dlg.urls()
+        dialog = UrlDialog([c.url for c in self.cams], self)
+        if dialog.exec():
+            urls = dialog.urls()
             save_urls(urls)
-            for c, u in zip(self.cams, urls):
-                c.set_url(u)
+            for cam, url in zip(self.cams, urls):
+                cam.set_url(url)
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    w = MainWindow()
-    w.show()
+    window = MainWindow()
+    window.show()
     sys.exit(app.exec())
