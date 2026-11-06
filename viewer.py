@@ -5,7 +5,8 @@ import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+os.environ["QT_QPA_PLATFORM"] = "xcb"
+os.environ.pop("WAYLAND_DISPLAY", None)
 
 import mpv
 from PySide6.QtCore import QEvent, Qt, QTimer
@@ -96,6 +97,8 @@ class CameraWidget(QWidget):
             wid=str(int(self.video.winId())),
             log_handler=log_handler,
             loglevel="warn",
+            vo="gpu",
+            gpu_context="x11egl",
             idle=True,
             volume=0,
             hwdec="no",
