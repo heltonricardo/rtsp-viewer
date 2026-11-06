@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 import json
+import locale
 import os
 import sys
-import threading
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
-import vlc
+import mpv
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,13 +31,6 @@ POLL_MS = 1000
 DEAD_TICKS = 5
 STUCK_TICKS = 15
 
-VLC = vlc.Instance(
-    "--no-video-title-show",
-    "--no-snapshot-preview",
-    "--avcodec-hw=none",
-    "--no-xlib",
-)
-
 
 def load_urls():
     try:
@@ -53,6 +46,10 @@ def save_urls(urls):
     CONFIG.chmod(0o600)
 
 
+def log_handler(level, prefix, text):
+    print(f"[mpv/{prefix}] {text}", end="", flush=True)
+
+
 class CameraWidget(QWidget):
     def __init__(self, name, on_click):
         super().__init__()
@@ -62,10 +59,8 @@ class CameraWidget(QWidget):
         self.volume = 0
         self.state = "no URL"
         self.idle = 0
-        self.last_time = -1
         self.was_live = False
-        self.busy = False
-        self.lock = threading.Lock()
+        self.player = None
 
         self.video = QFrame()
         self.video.setStyleSheet("background: black;")
@@ -82,11 +77,6 @@ class CameraWidget(QWidget):
         layout.addWidget(self.video, 1)
         layout.addWidget(self.label)
 
-        self.player = VLC.media_player_new()
-        self.player.video_set_mouse_input(False)
-        self.player.video_set_key_input(False)
-        self.player.audio_set_volume(0)
-
         self.timer = QTimer(self)
         self.timer.setInterval(POLL_MS)
         self.timer.timeout.connect(self._poll)
@@ -94,12 +84,35 @@ class CameraWidget(QWidget):
 
         self._refresh_label()
 
-    def _bind(self):
-        self.player.set_xwindow(int(self.video.winId()))
-
     def showEvent(self, ev):
         super().showEvent(ev)
-        self._bind()
+        if self.player is None:
+            QTimer.singleShot(0, self._ensure_player)
+
+    def _ensure_player(self):
+        if self.player is not None:
+            return
+        self.player = mpv.MPV(
+            wid=str(int(self.video.winId())),
+            log_handler=log_handler,
+            loglevel="warn",
+            idle=True,
+            volume=0,
+            hwdec="no",
+            cache="no",
+            osc=False,
+            osd_level=0,
+            input_default_bindings=False,
+            input_vo_keyboard=False,
+            input_cursor=False,
+            cursor_autohide="no",
+            network_timeout=10,
+            demuxer_lavf_o="rtsp_transport=tcp",
+            demuxer_lavf_analyzeduration=5,
+            demuxer_lavf_probesize=10000000,
+        )
+        if self.url:
+            self.start()
 
     def set_url(self, url):
         self.url = url.strip()
@@ -107,74 +120,48 @@ class CameraWidget(QWidget):
 
     def start(self):
         self.idle = 0
-        self.last_time = -1
         self.was_live = False
         if not self.url:
             self.state = "no URL"
+            if self.player is not None:
+                self.player.stop()
             self._refresh_label()
-            threading.Thread(target=self._halt, daemon=True).start()
             return
         self.state = "connecting..."
         self._refresh_label()
-        self._bind()
-        self.busy = True
-        threading.Thread(target=self._open, args=(self.url,), daemon=True).start()
-
-    def _halt(self):
-        with self.lock:
-            self.player.stop()
-
-    def _open(self, url):
-        try:
-            with self.lock:
-                self.player.stop()
-                media = VLC.media_new(
-                    url,
-                    ":rtsp-tcp",
-                    ":network-caching=500",
-                    ":live-caching=500",
-                )
-                self.player.set_media(media)
-                self.player.play()
-        finally:
-            self.busy = False
+        if self.player is not None:
+            self.player.play(self.url)
 
     def _poll(self):
-        if not self.url or self.busy:
+        if not self.url or self.player is None:
             return
-        st = self.player.get_state()
-        if st == vlc.State.Playing:
-            t = self.player.get_time()
-            if t > 0 and t == self.last_time:
-                self.idle += 1
-                self.state = "loading..."
-            else:
-                self.last_time = t
-                self.idle = 0
-                self.state = "live"
-                if not self.was_live:
-                    self.was_live = True
-                    self.player.audio_set_volume(self.volume)
-            if self.idle >= STUCK_TICKS:
+        try:
+            dead = self.player.idle_active
+            waiting = self.player.core_idle
+        except Exception:
+            return
+        if dead:
+            self.idle += 1
+            self.state = "disconnected" if self.was_live else "connecting..."
+            if self.idle >= DEAD_TICKS:
                 self.start()
                 return
-        elif st in (vlc.State.Opening, vlc.State.Buffering):
+        elif waiting:
             self.idle += 1
-            self.state = "connecting..." if not self.was_live else "loading..."
+            self.state = "loading..." if self.was_live else "connecting..."
             if self.idle >= STUCK_TICKS:
                 self.start()
                 return
         else:
-            self.idle += 1
-            self.state = "error" if st == vlc.State.Error else "disconnected"
-            if self.idle >= DEAD_TICKS:
-                self.start()
-                return
+            self.idle = 0
+            self.was_live = True
+            self.state = "live"
         self._refresh_label()
 
     def set_volume(self, value):
         self.volume = max(0, min(100, value))
-        self.player.audio_set_volume(self.volume)
+        if self.player is not None:
+            self.player.volume = self.volume
         self._refresh_label()
 
     def _refresh_label(self):
@@ -183,14 +170,12 @@ class CameraWidget(QWidget):
 
     def shutdown(self):
         self.timer.stop()
-        t = threading.Thread(target=self._close, daemon=True)
-        t.start()
-        return t
-
-    def _close(self):
-        with self.lock:
-            self.player.stop()
-            self.player.release()
+        if self.player is not None:
+            try:
+                self.player.terminate()
+            except Exception:
+                pass
+            self.player = None
 
     def eventFilter(self, obj, ev):
         if obj is self.video:
@@ -301,14 +286,14 @@ class MainWindow(QMainWindow):
                 cam.set_url(url)
 
     def closeEvent(self, ev):
-        threads = [cam.shutdown() for cam in self.cams]
-        for t in threads:
-            t.join(2)
+        for cam in self.cams:
+            cam.shutdown()
         super().closeEvent(ev)
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    locale.setlocale(locale.LC_NUMERIC, "C")
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
