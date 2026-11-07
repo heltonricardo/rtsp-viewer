@@ -2,10 +2,12 @@
 import json
 import locale
 import os
-import signal
-import subprocess
+import re
+import socket
 import sys
+import threading
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 os.environ["QT_QPA_PLATFORM"] = "xcb"
 os.environ.pop("WAYLAND_DISPLAY", None)
@@ -35,8 +37,9 @@ DEAD_TICKS = 5
 STUCK_TICKS = 15
 RELAY_PREFIX = "relay:"
 RELAY_BASE_PORT = 18080
-RELAY_WAIT_MS = 6000
-RELAY_FAILS = 5
+
+TRANSPORT_RE = re.compile(rb"(?im)^(Transport:[ \t]*RTP/AVP)(;[^\r\n]*interleaved=)")
+LENGTH_RE = re.compile(rb"(?i)content-length:[ \t]*(\d+)")
 
 
 def load_urls():
@@ -57,6 +60,128 @@ def log_handler(level, prefix, text):
     print(f"[mpv/{prefix}] {text}", end="", flush=True)
 
 
+class RtspFixProxy:
+    def __init__(self, local_port, host, port):
+        self.local_port = local_port
+        self.host = host
+        self.port = port
+        self.sock = None
+        self.conns = set()
+        self.lock = threading.Lock()
+
+    def start(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", self.local_port))
+        self.sock.listen(8)
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def stop(self):
+        if self.sock is not None:
+            try:
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+        with self.lock:
+            conns = list(self.conns)
+            self.conns.clear()
+        for c in conns:
+            self._close(c)
+
+    @staticmethod
+    def _close(s):
+        try:
+            s.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            s.close()
+        except OSError:
+            pass
+
+    def _accept(self):
+        sock = self.sock
+        while sock is not None:
+            try:
+                client, _ = sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(client,), daemon=True).start()
+
+    def _handle(self, client):
+        try:
+            camera = socket.create_connection((self.host, self.port), timeout=10)
+            camera.settimeout(None)
+        except OSError:
+            self._close(client)
+            return
+        for s in (client, camera):
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        with self.lock:
+            self.conns.update((client, camera))
+        threading.Thread(target=self._up, args=(client, camera), daemon=True).start()
+        self._down(camera, client)
+        self._close(client)
+        self._close(camera)
+        with self.lock:
+            self.conns.discard(client)
+            self.conns.discard(camera)
+
+    @staticmethod
+    def _up(client, camera):
+        try:
+            while True:
+                data = client.recv(65536)
+                if not data:
+                    break
+                camera.sendall(data)
+        except OSError:
+            pass
+        try:
+            camera.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _down(camera, client):
+        buf = b""
+        try:
+            while True:
+                data = camera.recv(65536)
+                if not data:
+                    break
+                buf += data
+                while buf:
+                    if buf[:1] == b"$":
+                        if len(buf) < 4:
+                            break
+                        n = 4 + int.from_bytes(buf[2:4], "big")
+                        if len(buf) < n:
+                            break
+                        client.sendall(buf[:n])
+                        buf = buf[n:]
+                    else:
+                        i = buf.find(b"\r\n\r\n")
+                        if i < 0:
+                            break
+                        head = buf[: i + 4]
+                        m = LENGTH_RE.search(head)
+                        clen = int(m.group(1)) if m else 0
+                        end = i + 4 + clen
+                        if len(buf) < end:
+                            break
+                        head = TRANSPORT_RE.sub(rb"\1/TCP\2", head)
+                        client.sendall(head + buf[i + 4 : end])
+                        buf = buf[end:]
+        except OSError:
+            pass
+
+
 class CameraWidget(QWidget):
     def __init__(self, name, on_click, port):
         super().__init__()
@@ -64,14 +189,13 @@ class CameraWidget(QWidget):
         self.on_click = on_click
         self.port = port
         self.url = ""
+        self.target = ""
         self.volume = 0
         self.state = "no URL"
         self.idle = 0
-        self.fails = 0
-        self.gen = 0
         self.was_live = False
         self.player = None
-        self.proc = None
+        self.proxy = None
 
         self.video = QFrame()
         self.video.setStyleSheet("background: black;")
@@ -127,91 +251,47 @@ class CameraWidget(QWidget):
         if self.url:
             self.start()
 
-    def _spawn_relay(self, real_url):
-        cmd = [
-            "flatpak",
-            "run",
-            "--command=vlc",
-            "org.videolan.VLC",
-            "-I",
-            "dummy",
-            real_url,
-            "--rtsp-tcp",
-            "--rtsp-frame-buffer-size=500000",
-            "--network-caching=1000",
-            "--sout",
-            f"#rtp{{sdp=rtsp://127.0.0.1:{self.port}/stream}}",
-        ]
-        log = open(f"/tmp/rtsp-relay-{self.port}.log", "w")
-        self.proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
-        log.close()
+    def _stop_proxy(self):
+        if self.proxy is not None:
+            self.proxy.stop()
+            self.proxy = None
 
-    def _kill_relay(self):
-        if self.proc is not None:
-            try:
-                os.killpg(self.proc.pid, signal.SIGTERM)
-            except Exception:
-                pass
-            self.proc = None
+    def _start_proxy(self):
+        real = self.url[len(RELAY_PREFIX) :].strip()
+        u = urlsplit(real)
+        userinfo = u.netloc.rpartition("@")[0]
+        netloc = f"127.0.0.1:{self.port}"
+        if userinfo:
+            netloc = f"{userinfo}@{netloc}"
+        self.target = urlunsplit(u._replace(netloc=netloc))
+        self.proxy = RtspFixProxy(self.port, u.hostname, u.port or 554)
+        try:
+            self.proxy.start()
+        except OSError as e:
+            self.proxy = None
+            self.state = f"proxy error: {e}"
 
     def set_url(self, url):
         self.url = url.strip()
-        self.fails = 0
+        self.target = self.url
+        self._stop_proxy()
+        if self.url.startswith(RELAY_PREFIX):
+            self._start_proxy()
         self.start()
 
     def start(self):
-        self.gen += 1
-        gen = self.gen
-        prev_live = self.was_live
         self.idle = 0
         self.was_live = False
-
         if not self.url:
-            self._kill_relay()
             self.state = "no URL"
             if self.player is not None:
                 self.player.stop()
             self._refresh_label()
             return
-
         self.state = "connecting..."
         self._refresh_label()
-        if self.player is None:
-            return
-
-        delay = 0
-        relay = self.url.startswith(RELAY_PREFIX)
-        if relay:
-            if not prev_live:
-                self.fails += 1
-            if self.fails >= RELAY_FAILS:
-                self._kill_relay()
-                self.fails = 0
-            if self.proc is None or self.proc.poll() is not None:
-                self._spawn_relay(self.url[len(RELAY_PREFIX) :].strip())
-                delay = RELAY_WAIT_MS
-            target = f"rtsp://127.0.0.1:{self.port}/stream"
-        else:
-            self._kill_relay()
-            target = self.url
-
-        if delay:
-            QTimer.singleShot(delay, lambda: self._play(gen, target, relay))
-        else:
-            self._play(gen, target, relay)
-
-    def _play(self, gen, target, relay):
-        if gen != self.gen or self.player is None:
-            return
-        transport = "udp" if relay else "tcp"
-        self.player["demuxer-lavf-o"] = f"rtsp_transport={transport}"
-        self.player.play(target)
+        if self.player is not None:
+            self.player.play(self.target)
 
     def _poll(self):
         if not self.url or self.player is None:
@@ -235,7 +315,6 @@ class CameraWidget(QWidget):
                 return
         else:
             self.idle = 0
-            self.fails = 0
             self.was_live = True
             self.state = "live"
         self._refresh_label()
@@ -248,14 +327,14 @@ class CameraWidget(QWidget):
 
     def _refresh_label(self):
         icon = "🔇" if self.volume == 0 else "🔊"
-        relay = " · relay" if self.url.startswith(RELAY_PREFIX) else ""
+        relay = " · proxy" if self.url.startswith(RELAY_PREFIX) else ""
         self.label.setText(
             f"{self.name}  ·  {icon} {self.volume}%  ·  {self.state}{relay}"
         )
 
     def shutdown(self):
         self.timer.stop()
-        self._kill_relay()
+        self._stop_proxy()
         if self.player is not None:
             try:
                 self.player.terminate()
