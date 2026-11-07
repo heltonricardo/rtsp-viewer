@@ -36,7 +36,7 @@ STUCK_TICKS = 15
 RELAY_PREFIX = "relay:"
 RELAY_BASE_PORT = 18080
 RELAY_WAIT_MS = 6000
-RELAY_FAILS = 3
+RELAY_FAILS = 5
 
 
 def load_urls():
@@ -140,8 +140,7 @@ class CameraWidget(QWidget):
             "--rtsp-frame-buffer-size=500000",
             "--network-caching=1000",
             "--sout",
-            "#transcode{acodec=mpga,ab=64,channels=1,samplerate=44100}"
-            f":std{{access=http,mux=ts,dst=127.0.0.1:{self.port}/stream}}",
+            f"#rtp{{sdp=rtsp://127.0.0.1:{self.port}/stream}}",
         ]
         log = open(f"/tmp/rtsp-relay-{self.port}.log", "w")
         self.proc = subprocess.Popen(
@@ -196,7 +195,7 @@ class CameraWidget(QWidget):
             if self.proc is None or self.proc.poll() is not None:
                 self._spawn_relay(self.url[len(RELAY_PREFIX) :].strip())
                 delay = RELAY_WAIT_MS
-            target = f"http://127.0.0.1:{self.port}/stream"
+            target = f"rtsp://127.0.0.1:{self.port}/stream"
         else:
             self._kill_relay()
             target = self.url
