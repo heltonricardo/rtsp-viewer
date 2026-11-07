@@ -186,7 +186,8 @@ class CameraWidget(QWidget):
             return
 
         delay = 0
-        if self.url.startswith(RELAY_PREFIX):
+        relay = self.url.startswith(RELAY_PREFIX)
+        if relay:
             if not prev_live:
                 self.fails += 1
             if self.fails >= RELAY_FAILS:
@@ -201,13 +202,15 @@ class CameraWidget(QWidget):
             target = self.url
 
         if delay:
-            QTimer.singleShot(delay, lambda: self._play(gen, target))
+            QTimer.singleShot(delay, lambda: self._play(gen, target, relay))
         else:
-            self._play(gen, target)
+            self._play(gen, target, relay)
 
-    def _play(self, gen, target):
+    def _play(self, gen, target, relay):
         if gen != self.gen or self.player is None:
             return
+        transport = "udp" if relay else "tcp"
+        self.player["demuxer-lavf-o"] = f"rtsp_transport={transport}"
         self.player.play(target)
 
     def _poll(self):
