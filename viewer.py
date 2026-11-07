@@ -139,9 +139,9 @@ class CameraWidget(QWidget):
             "--rtsp-tcp",
             "--rtsp-frame-buffer-size=500000",
             "--network-caching=1000",
-            "--no-audio",
             "--sout",
-            f"#std{{access=http,mux=ts,dst=127.0.0.1:{self.port}/stream}}",
+            "#transcode{acodec=mpga,ab=64,channels=1,samplerate=44100}"
+            f":std{{access=http,mux=ts,dst=127.0.0.1:{self.port}/stream}}",
         ]
         log = open(f"/tmp/rtsp-relay-{self.port}.log", "w")
         self.proc = subprocess.Popen(
