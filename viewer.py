@@ -2,6 +2,8 @@
 import json
 import locale
 import os
+import signal
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,6 +33,10 @@ VOLUME_STEP = 5
 POLL_MS = 1000
 DEAD_TICKS = 5
 STUCK_TICKS = 15
+RELAY_PREFIX = "relay:"
+RELAY_BASE_PORT = 18080
+RELAY_WAIT_MS = 3000
+RELAY_FAILS = 3
 
 
 def load_urls():
@@ -52,16 +58,20 @@ def log_handler(level, prefix, text):
 
 
 class CameraWidget(QWidget):
-    def __init__(self, name, on_click):
+    def __init__(self, name, on_click, port):
         super().__init__()
         self.name = name
         self.on_click = on_click
+        self.port = port
         self.url = ""
         self.volume = 0
         self.state = "no URL"
         self.idle = 0
+        self.fails = 0
+        self.gen = 0
         self.was_live = False
         self.player = None
+        self.proc = None
 
         self.video = QFrame()
         self.video.setStyleSheet("background: black;")
@@ -117,23 +127,89 @@ class CameraWidget(QWidget):
         if self.url:
             self.start()
 
+    def _spawn_relay(self, real_url):
+        cmd = [
+            "flatpak",
+            "run",
+            "--command=vlc",
+            "org.videolan.VLC",
+            "-I",
+            "dummy",
+            real_url,
+            "--rtsp-tcp",
+            "--rtsp-frame-buffer-size=500000",
+            "--network-caching=1000",
+            "--sout",
+            "#transcode{acodec=mpga,ab=64,channels=1,samplerate=44100}"
+            f":std{{access=http,mux=ts,dst=127.0.0.1:{self.port}/stream}}",
+        ]
+        log = open(f"/tmp/rtsp-relay-{self.port}.log", "w")
+        self.proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+        log.close()
+
+    def _kill_relay(self):
+        if self.proc is not None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except Exception:
+                pass
+            self.proc = None
+
     def set_url(self, url):
         self.url = url.strip()
+        self.fails = 0
         self.start()
 
     def start(self):
+        self.gen += 1
+        gen = self.gen
+        prev_live = self.was_live
         self.idle = 0
         self.was_live = False
+
         if not self.url:
+            self._kill_relay()
             self.state = "no URL"
             if self.player is not None:
                 self.player.stop()
             self._refresh_label()
             return
+
         self.state = "connecting..."
         self._refresh_label()
-        if self.player is not None:
-            self.player.play(self.url)
+        if self.player is None:
+            return
+
+        delay = 0
+        if self.url.startswith(RELAY_PREFIX):
+            if not prev_live:
+                self.fails += 1
+            if self.fails >= RELAY_FAILS:
+                self._kill_relay()
+                self.fails = 0
+            if self.proc is None or self.proc.poll() is not None:
+                self._spawn_relay(self.url[len(RELAY_PREFIX) :].strip())
+                delay = RELAY_WAIT_MS
+            target = f"http://127.0.0.1:{self.port}/stream"
+        else:
+            self._kill_relay()
+            target = self.url
+
+        if delay:
+            QTimer.singleShot(delay, lambda: self._play(gen, target))
+        else:
+            self._play(gen, target)
+
+    def _play(self, gen, target):
+        if gen != self.gen or self.player is None:
+            return
+        self.player.play(target)
 
     def _poll(self):
         if not self.url or self.player is None:
@@ -157,6 +233,7 @@ class CameraWidget(QWidget):
                 return
         else:
             self.idle = 0
+            self.fails = 0
             self.was_live = True
             self.state = "live"
         self._refresh_label()
@@ -169,10 +246,14 @@ class CameraWidget(QWidget):
 
     def _refresh_label(self):
         icon = "🔇" if self.volume == 0 else "🔊"
-        self.label.setText(f"{self.name}  ·  {icon} {self.volume}%  ·  {self.state}")
+        relay = " · relay" if self.url.startswith(RELAY_PREFIX) else ""
+        self.label.setText(
+            f"{self.name}  ·  {icon} {self.volume}%  ·  {self.state}{relay}"
+        )
 
     def shutdown(self):
         self.timer.stop()
+        self._kill_relay()
         if self.player is not None:
             try:
                 self.player.terminate()
@@ -199,12 +280,12 @@ class UrlDialog(QDialog):
     def __init__(self, urls, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Camera URLs")
-        self.setMinimumWidth(650)
+        self.setMinimumWidth(700)
         form = QFormLayout()
         self.edits = []
         for i, u in enumerate(urls, 1):
             e = QLineEdit(u)
-            e.setPlaceholderText("rtsp://user:password@host:port/path")
+            e.setPlaceholderText("[relay:]rtsp://user:password@host:port/path")
             form.addRow(f"Camera {i}", e)
             self.edits.append(e)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -225,7 +306,10 @@ class MainWindow(QMainWindow):
         self.resize(1000, 800)
         self.focused = None
 
-        self.cams = [CameraWidget(f"Camera {i}", self.toggle_focus) for i in (1, 2, 3)]
+        self.cams = [
+            CameraWidget(f"Camera {i}", self.toggle_focus, RELAY_BASE_PORT + i)
+            for i in (1, 2, 3)
+        ]
 
         button = QPushButton("⚙ URLs")
         button.clicked.connect(self.edit_urls)
