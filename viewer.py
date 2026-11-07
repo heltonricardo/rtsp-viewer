@@ -204,16 +204,16 @@ class CameraWidget(QWidget):
         self.video.installEventFilter(self)
 
         self.label = QLabel()
-        self.label.setStyleSheet("padding: 6px 4px;")
-        self.label.setFixedWidth(92)
+        self.label.setStyleSheet(
+            "padding: 8px 4px; border-bottom: 1px solid palette(mid);"
+        )
         self.label.setWordWrap(True)
         self.label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.video, 1)
-        layout.addWidget(self.label)
 
         self.timer = QTimer(self)
         self.timer.setInterval(POLL_MS)
@@ -331,9 +331,7 @@ class CameraWidget(QWidget):
     def _refresh_label(self):
         icon = "🔇" if self.volume == 0 else "🔊"
         relay = "\nproxy" if self.url.startswith(RELAY_PREFIX) else ""
-        self.label.setText(
-            f"{self.name}\n\n{icon} {self.volume}%\n\n{self.state}{relay}"
-        )
+        self.label.setText(f"{self.name}\n{icon} {self.volume}%\n{self.state}{relay}")
 
     def shutdown(self):
         self.timer.stop()
@@ -406,12 +404,27 @@ class MainWindow(QMainWindow):
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setSpacing(0)
 
+        sidebar = QWidget()
+        sidebar.setFixedWidth(110)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.setSpacing(0)
+        side.addStretch()
+        for cam in self.cams:
+            side.addWidget(cam.label)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addLayout(self.grid, 1)
+        body.addWidget(sidebar)
+
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addLayout(top)
-        layout.addLayout(self.grid, 1)
+        layout.addLayout(body, 1)
         self.setCentralWidget(central)
 
         self.apply_layout()
