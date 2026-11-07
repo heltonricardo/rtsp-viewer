@@ -204,11 +204,14 @@ class CameraWidget(QWidget):
         self.video.installEventFilter(self)
 
         self.label = QLabel()
-        self.label.setStyleSheet("padding: 2px 6px;")
+        self.label.setStyleSheet("padding: 6px 4px;")
+        self.label.setFixedWidth(92)
+        self.label.setWordWrap(True)
+        self.label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(2)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         layout.addWidget(self.video, 1)
         layout.addWidget(self.label)
 
@@ -327,9 +330,9 @@ class CameraWidget(QWidget):
 
     def _refresh_label(self):
         icon = "🔇" if self.volume == 0 else "🔊"
-        relay = " · proxy" if self.url.startswith(RELAY_PREFIX) else ""
+        relay = "\nproxy" if self.url.startswith(RELAY_PREFIX) else ""
         self.label.setText(
-            f"{self.name}  ·  {icon} {self.volume}%  ·  {self.state}{relay}"
+            f"{self.name}\n\n{icon} {self.volume}%\n\n{self.state}{relay}"
         )
 
     def shutdown(self):
@@ -395,15 +398,18 @@ class MainWindow(QMainWindow):
         button = QPushButton("⚙ URLs")
         button.clicked.connect(self.edit_urls)
         top = QHBoxLayout()
+        top.setContentsMargins(4, 4, 4, 4)
         top.addWidget(button)
         top.addStretch()
 
         self.grid = QGridLayout()
         self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(0)
 
         central = QWidget()
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         layout.addLayout(top)
         layout.addLayout(self.grid, 1)
         self.setCentralWidget(central)
