@@ -14,7 +14,7 @@ os.environ["QT_QPA_PLATFORM"] = "xcb"
 os.environ.pop("WAYLAND_DISPLAY", None)
 
 import mpv
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QRadioButton,
+    QRubberBand,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -94,11 +95,21 @@ def sanitize_settings(raw, count):
     main = raw.get("main_camera")
     step = raw.get("volume_step")
     return {
-        "sidebar": sidebar if sidebar in ("left", "right") else DEFAULT_SETTINGS["sidebar"],
-        "sidebar_v": sidebar_v if sidebar_v in ("top", "bottom") else DEFAULT_SETTINGS["sidebar_v"],
+        "sidebar": (
+            sidebar if sidebar in ("left", "right") else DEFAULT_SETTINGS["sidebar"]
+        ),
+        "sidebar_v": (
+            sidebar_v
+            if sidebar_v in ("top", "bottom")
+            else DEFAULT_SETTINGS["sidebar_v"]
+        ),
         "layout": layout if layout in ("equal", "main") else DEFAULT_SETTINGS["layout"],
         "main_camera": main if isinstance(main, int) and 0 <= main < count else 0,
-        "volume_step": step if isinstance(step, int) and 1 <= step <= 25 else DEFAULT_SETTINGS["volume_step"],
+        "volume_step": (
+            step
+            if isinstance(step, int) and 1 <= step <= 25
+            else DEFAULT_SETTINGS["volume_step"]
+        ),
     }
 
 
@@ -118,7 +129,10 @@ def load_config():
                 continue
             relay = item.startswith(LEGACY_RELAY_PREFIX)
             raw.append(
-                {"url": item[len(LEGACY_RELAY_PREFIX):].strip() if relay else item, "relay": relay}
+                {
+                    "url": item[len(LEGACY_RELAY_PREFIX) :].strip() if relay else item,
+                    "relay": relay,
+                }
             )
     cameras = [sanitize_camera(c) for c in raw] if isinstance(raw, list) else []
     if not cameras:
@@ -296,6 +310,11 @@ class CameraWidget(QWidget):
         self.was_live = False
         self.player = None
         self.proxy = None
+        self.focused = False
+        self.zoomed = False
+        self.press_pos = None
+        self.dragging = False
+        self.band = QRubberBand(QRubberBand.Rectangle)
 
         self.video = QFrame()
         self.video.setStyleSheet("background: black;")
@@ -395,6 +414,7 @@ class CameraWidget(QWidget):
         self.start()
 
     def start(self):
+        self.reset_zoom()
         self.idle = 0
         self.was_live = False
         if not self.url or self.fatal:
@@ -445,7 +465,61 @@ class CameraWidget(QWidget):
         relay = "\nrelay" if self.relay else ""
         self.label.setText(f"{self.name}\n{icon} {self.volume}%\n{self.state}{relay}")
 
+    def set_focused(self, value):
+        self.focused = value
+        if not value:
+            self._cancel_drag()
+            self.reset_zoom()
+
+    def _cancel_drag(self):
+        self.press_pos = None
+        self.dragging = False
+        self.band.hide()
+
+    def reset_zoom(self):
+        if not self.zoomed:
+            return
+        self.zoomed = False
+        if self.player is not None:
+            try:
+                self.player["video-crop"] = ""
+            except Exception:
+                pass
+
+    def _selection(self, pos):
+        return QRect(self.press_pos, pos).normalized().intersected(self.video.rect())
+
+    def _apply_zoom(self, rect):
+        if self.player is None:
+            return
+        try:
+            vw = int(self.player.width)
+            vh = int(self.player.height)
+        except Exception:
+            return
+        if not vw or not vh:
+            return
+        w = self.video.width()
+        h = self.video.height()
+        scale = min(w / vw, h / vh)
+        ox = (w - vw * scale) / 2
+        oy = (h - vh * scale) / 2
+        x0 = max(0.0, (rect.left() - ox) / scale)
+        y0 = max(0.0, (rect.top() - oy) / scale)
+        x1 = min(float(vw), (rect.right() - ox) / scale)
+        y1 = min(float(vh), (rect.bottom() - oy) / scale)
+        cw = int(x1 - x0)
+        ch = int(y1 - y0)
+        if cw < 16 or ch < 16:
+            return
+        try:
+            self.player["video-crop"] = f"{cw}x{ch}+{int(x0)}+{int(y0)}"
+        except Exception:
+            return
+        self.zoomed = True
+
     def shutdown(self):
+        self.band.hide()
         self.timer.stop()
         self._stop_proxy()
         if self.player is not None:
@@ -457,14 +531,46 @@ class CameraWidget(QWidget):
 
     def eventFilter(self, obj, ev):
         if obj is self.video:
-            if ev.type() == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
-                self.on_click(self)
+            t = ev.type()
+            if t == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
+                if not self.focused:
+                    self.on_click(self)
+                else:
+                    self.press_pos = ev.position().toPoint()
+                    self.dragging = False
                 return True
-            if ev.type() == QEvent.Wheel:
+            if t == QEvent.MouseMove and self.press_pos is not None and not self.zoomed:
+                pos = ev.position().toPoint()
+                if not self.dragging and (pos - self.press_pos).manhattanLength() >= 8:
+                    self.dragging = True
+                if self.dragging:
+                    rect = self._selection(pos)
+                    self.band.setGeometry(
+                        QRect(self.video.mapToGlobal(rect.topLeft()), rect.size())
+                    )
+                    self.band.show()
+                return True
+            if (
+                t == QEvent.MouseButtonRelease
+                and ev.button() == Qt.LeftButton
+                and self.press_pos is not None
+            ):
+                dragging = self.dragging
+                rect = self._selection(ev.position().toPoint()) if dragging else None
+                self._cancel_drag()
+                if self.zoomed:
+                    self.reset_zoom()
+                elif dragging:
+                    self._apply_zoom(rect)
+                else:
+                    self.on_click(self)
+                return True
+            if t == QEvent.Wheel:
                 dy = ev.angleDelta().y()
                 if dy:
                     self.set_volume(
-                        self.volume + (self.volume_step if dy > 0 else -self.volume_step)
+                        self.volume
+                        + (self.volume_step if dy > 0 else -self.volume_step)
                     )
                 return True
         return super().eventFilter(obj, ev)
@@ -537,8 +643,12 @@ class SettingsDialog(QDialog):
         self.rows = []
         settings = config["settings"]
 
-        self.sidebar = RadioGroup([("Left", "left"), ("Right", "right")], settings["sidebar"])
-        self.sidebar_v = RadioGroup([("Top", "top"), ("Bottom", "bottom")], settings["sidebar_v"])
+        self.sidebar = RadioGroup(
+            [("Left", "left"), ("Right", "right")], settings["sidebar"]
+        )
+        self.sidebar_v = RadioGroup(
+            [("Top", "top"), ("Bottom", "bottom")], settings["sidebar_v"]
+        )
         self.layout_mode = RadioGroup(
             [("Equal size", "equal"), ("Main camera", "main")], settings["layout"]
         )
@@ -697,7 +807,9 @@ class MainWindow(QMainWindow):
         self.body.setSpacing(0)
         self.setCentralWidget(central)
 
-        QShortcut(QKeySequence(Qt.Key_F11), self).activated.connect(self.toggle_fullscreen)
+        QShortcut(QKeySequence(Qt.Key_F11), self).activated.connect(
+            self.toggle_fullscreen
+        )
 
         self.apply_config()
         if not any(c["url"] for c in self.config["cameras"]):
@@ -791,6 +903,8 @@ class MainWindow(QMainWindow):
 
         for cam in self.cams:
             cam.setVisible(self.focused is None or cam is self.focused)
+        for cam in self.cams:
+            cam.set_focused(cam is self.focused)
 
     def toggle_focus(self, cam):
         self.focused = None if self.focused is cam else cam
