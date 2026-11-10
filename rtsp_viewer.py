@@ -18,6 +18,7 @@ from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -54,6 +56,7 @@ LEGACY_RELAY_PREFIX = "relay:"
 DEFAULT_WINDOW = [1000, 800]
 DEFAULT_SETTINGS = {
     "sidebar": "right",
+    "sidebar_v": "top",
     "layout": "equal",
     "main_camera": 0,
     "volume_step": 5,
@@ -86,11 +89,13 @@ def sanitize_camera(raw):
 def sanitize_settings(raw, count):
     raw = raw if isinstance(raw, dict) else {}
     sidebar = raw.get("sidebar")
+    sidebar_v = raw.get("sidebar_v")
     layout = raw.get("layout")
     main = raw.get("main_camera")
     step = raw.get("volume_step")
     return {
         "sidebar": sidebar if sidebar in ("left", "right") else DEFAULT_SETTINGS["sidebar"],
+        "sidebar_v": sidebar_v if sidebar_v in ("top", "bottom") else DEFAULT_SETTINGS["sidebar_v"],
         "layout": layout if layout in ("equal", "main") else DEFAULT_SETTINGS["layout"],
         "main_camera": main if isinstance(main, int) and 0 <= main < count else 0,
         "volume_step": step if isinstance(step, int) and 1 <= step <= 25 else DEFAULT_SETTINGS["volume_step"],
@@ -504,7 +509,27 @@ class CameraRow(QWidget):
         }
 
 
+class RadioGroup(QWidget):
+    def __init__(self, options, current, parent=None):
+        super().__init__(parent)
+        self.group = QButtonGroup(self)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        for label, value in options:
+            button = QRadioButton(label)
+            button.setProperty("value", value)
+            button.setChecked(value == current)
+            self.group.addButton(button)
+            layout.addWidget(button)
+        layout.addStretch()
+
+    def value(self):
+        return self.group.checkedButton().property("value")
+
+
 class SettingsDialog(QDialog):
+    applied = Signal(dict)
+
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
@@ -512,16 +537,12 @@ class SettingsDialog(QDialog):
         self.rows = []
         settings = config["settings"]
 
-        self.sidebar = QComboBox()
-        self.sidebar.addItem("Left", "left")
-        self.sidebar.addItem("Right", "right")
-        self.sidebar.setCurrentIndex(self.sidebar.findData(settings["sidebar"]))
-
-        self.layout_mode = QComboBox()
-        self.layout_mode.addItem("Equal size", "equal")
-        self.layout_mode.addItem("Main camera", "main")
-        self.layout_mode.setCurrentIndex(self.layout_mode.findData(settings["layout"]))
-        self.layout_mode.currentIndexChanged.connect(lambda _: self._refresh())
+        self.sidebar = RadioGroup([("Left", "left"), ("Right", "right")], settings["sidebar"])
+        self.sidebar_v = RadioGroup([("Top", "top"), ("Bottom", "bottom")], settings["sidebar_v"])
+        self.layout_mode = RadioGroup(
+            [("Equal size", "equal"), ("Main camera", "main")], settings["layout"]
+        )
+        self.layout_mode.group.buttonClicked.connect(lambda _: self._refresh())
 
         self.main = QComboBox()
 
@@ -552,15 +573,21 @@ class SettingsDialog(QDialog):
         cams_layout.addWidget(self.scroll)
         cams_layout.addWidget(add, 0, Qt.AlignLeft)
 
+        position = QWidget()
+        position_layout = QVBoxLayout(position)
+        position_layout.setContentsMargins(0, 0, 0, 0)
+        position_layout.addWidget(self.sidebar)
+        position_layout.addWidget(self.sidebar_v)
+
         display_box = QGroupBox("Display")
         form = QFormLayout(display_box)
-        form.addRow("Sidebar position", self.sidebar)
+        form.addRow("Sidebar position", position)
         form.addRow("Layout", self.layout_mode)
         form.addRow("Main camera", self.main)
         form.addRow("Volume step", self.step)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
+        buttons = QDialogButtonBox(QDialogButtonBox.Apply | QDialogButtonBox.Close)
+        buttons.button(QDialogButtonBox.Apply).clicked.connect(self._apply)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
@@ -608,14 +635,18 @@ class SettingsDialog(QDialog):
             self.main.addItem(f"{i} - {row.name.text().strip() or f'Camera {i}'}")
         self.main.setCurrentIndex(max(0, min(current, count - 1)))
         self.main.blockSignals(False)
-        self.main.setEnabled(self.layout_mode.currentData() == "main")
+        self.main.setEnabled(self.layout_mode.value() == "main")
+
+    def _apply(self):
+        self.applied.emit(self.get_config())
 
     def get_config(self):
         return {
             "cameras": [row.data() for row in self.rows],
             "settings": {
-                "sidebar": self.sidebar.currentData(),
-                "layout": self.layout_mode.currentData(),
+                "sidebar": self.sidebar.value(),
+                "sidebar_v": self.sidebar_v.value(),
+                "layout": self.layout_mode.value(),
                 "main_camera": max(0, self.main.currentIndex()),
                 "volume_step": self.step.value(),
             },
@@ -643,6 +674,7 @@ class MainWindow(QMainWindow):
         self.labels_layout.setContentsMargins(0, 0, 0, 0)
         self.labels_layout.setSpacing(0)
         self.labels_layout.addStretch()
+        self.labels_layout.addStretch()
         labels_host = QWidget()
         labels_host.setLayout(self.labels_layout)
         scroll = QScrollArea()
@@ -651,13 +683,13 @@ class MainWindow(QMainWindow):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setWidget(labels_host)
 
+        self.settings_button = button
+        self.labels_scroll = scroll
         self.sidebar = QWidget()
-        self.sidebar.setFixedWidth(130)
-        side = QVBoxLayout(self.sidebar)
-        side.setContentsMargins(0, 0, 0, 0)
-        side.setSpacing(0)
-        side.addWidget(button)
-        side.addWidget(scroll, 1)
+        self.sidebar.setFixedWidth(100)
+        self.side_layout = QVBoxLayout(self.sidebar)
+        self.side_layout.setContentsMargins(0, 0, 0, 0)
+        self.side_layout.setSpacing(0)
 
         central = QWidget()
         self.body = QHBoxLayout(central)
@@ -701,14 +733,27 @@ class MainWindow(QMainWindow):
         self.apply_layout()
 
     def apply_sidebar(self):
+        settings = self.config["settings"]
         self.body.removeWidget(self.sidebar)
         self.body.removeWidget(self.grid_host)
-        if self.config["settings"]["sidebar"] == "left":
+        if settings["sidebar"] == "left":
             self.body.addWidget(self.sidebar)
             self.body.addWidget(self.grid_host, 1)
         else:
             self.body.addWidget(self.grid_host, 1)
             self.body.addWidget(self.sidebar)
+
+        top = settings["sidebar_v"] == "top"
+        self.side_layout.removeWidget(self.settings_button)
+        self.side_layout.removeWidget(self.labels_scroll)
+        if top:
+            self.side_layout.addWidget(self.settings_button)
+            self.side_layout.addWidget(self.labels_scroll, 1)
+        else:
+            self.side_layout.addWidget(self.labels_scroll, 1)
+            self.side_layout.addWidget(self.settings_button)
+        self.labels_layout.setStretch(0, 0 if top else 1)
+        self.labels_layout.setStretch(self.labels_layout.count() - 1, 1 if top else 0)
 
     def apply_layout(self):
         for cam in self.cams:
@@ -759,10 +804,13 @@ class MainWindow(QMainWindow):
 
     def open_settings(self):
         dialog = SettingsDialog(self.config, self)
-        if dialog.exec():
-            self.config.update(dialog.get_config())
-            save_config(self.config)
-            self.apply_config()
+        dialog.applied.connect(self.apply_settings)
+        dialog.exec()
+
+    def apply_settings(self, new_config):
+        self.config.update(new_config)
+        save_config(self.config)
+        self.apply_config()
 
     def closeEvent(self, ev):
         for cam in self.cams:

@@ -9,7 +9,7 @@ Lightweight multi-camera RTSP viewer for Linux, built with PySide6 and libmpv.
 - Layouts: all cameras equal size, or one main camera with the others below
 - Click a camera to maximize it, click again to go back
 - Mouse wheel over a camera changes its volume (starts muted)
-- Sidebar on the left or right with per-camera volume and connection status
+- Compact sidebar with per-camera volume and connection status, placed left or right and aligned top or bottom
 - Automatic reconnection when a stream drops or stalls
 - Optional per-camera relay proxy for cameras with a faulty RTSP `Transport` header
 - Settings apply instantly, no restart needed
@@ -63,12 +63,12 @@ or launch **RTSP Viewer** from the application menu.
 
 ## Usage
 
-Open **⚙ Settings** in the sidebar.
+Open **⚙ Settings** in the sidebar. **Apply** saves and applies the changes without closing the dialog; **Close** dismisses it.
 
 | Setting | Description |
 |---|---|
 | Cameras | One row per camera: optional name, RTSP URL, relay checkbox. Use **+ Add camera** to add more and **✕** to remove. |
-| Sidebar position | Left or right. |
+| Sidebar position | Side (Left/Right) and alignment (Top/Bottom). The Settings button stays on the same end as the camera info. |
 | Layout | **Equal size** places all cameras in a grid. **Main camera** shows one large camera with the rest in a row below. |
 | Main camera | Which camera is the large one (Main camera layout only). |
 | Volume step | Volume change per mouse wheel notch. |
@@ -108,4 +108,4 @@ Configs from older versions (`urls` list with a `relay:` prefix) are migrated au
 
 ## License
 
-Add a license of your choice (e.g. MIT).
+[MIT](LICENSE)
