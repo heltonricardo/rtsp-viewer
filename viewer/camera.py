@@ -15,7 +15,7 @@ CATCHUP_START = 3.0
 CATCHUP_STOP = 0.8
 CATCHUP_SPEED = 1.15
 LAG_RESTART = 20.0
-VOLUME_MAX = 200
+VOLUME_MAX = 500
 
 
 def log_handler(level, prefix, text):
@@ -123,8 +123,8 @@ class CameraWidget(QWidget):
             cursor_autohide="no",
             network_timeout=10,
             demuxer_lavf_o="rtsp_transport=tcp",
-            demuxer_lavf_analyzeduration=5,
-            demuxer_lavf_probesize=10000000,
+            demuxer_lavf_analyzeduration=1,
+            demuxer_lavf_probesize=1000000,
         )
         if self.url:
             self.start()
