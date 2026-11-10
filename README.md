@@ -14,6 +14,7 @@ Lightweight multi-camera RTSP viewer for Linux, built with PySide6 and libmpv.
 - Optional per-camera relay proxy for cameras with a faulty RTSP `Transport` header
 - Settings apply instantly, no restart needed
 - `F11` toggles fullscreen
+- With a camera maximized, click and drag to draw a rectangle and zoom into that area; click to reset the zoom, click again to return to the grid
 
 ## Tested on
 
@@ -65,13 +66,13 @@ or launch **RTSP Viewer** from the application menu.
 
 Open **⚙ Settings** in the sidebar. **Apply** saves and applies the changes without closing the dialog; **Close** dismisses it.
 
-| Setting | Description |
-|---|---|
-| Cameras | One row per camera: optional name, RTSP URL, relay checkbox. Use **+ Add camera** to add more and **✕** to remove. |
-| Sidebar position | Side (Left/Right) and alignment (Top/Bottom). The Settings button stays on the same end as the camera info. |
-| Layout | **Equal size** places all cameras in a grid. **Main camera** shows one large camera with the rest in a row below. |
-| Main camera | Which camera is the large one (Main camera layout only). |
-| Volume step | Volume change per mouse wheel notch. |
+| Setting          | Description                                                                                                        |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Cameras          | One row per camera: optional name, RTSP URL, relay checkbox. Use **+ Add camera** to add more and **✕** to remove. |
+| Sidebar position | Side (Left/Right) and alignment (Top/Bottom). The Settings button stays on the same end as the camera info.        |
+| Layout           | **Equal size** places all cameras in a grid. **Main camera** shows one large camera with the rest in a row below.  |
+| Main camera      | Which camera is the large one (Main camera layout only).                                                           |
+| Volume step      | Volume change per mouse wheel notch.                                                                               |
 
 URL format:
 
@@ -99,12 +100,12 @@ Configs from older versions (`urls` list with a `relay:` prefix) are migrated au
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---|---|
-| `OSError: Cannot find libmpv` | Install `libmpv2` (or `libmpv1`) |
-| `Could not load the Qt platform plugin "xcb"` | Install `libxcb-cursor0` |
-| Camera stays on `connecting...` | Check the URL, then try enabling **Relay** |
-| Black screen with audio only | Check the `[mpv/...]` messages printed in the terminal |
+| Problem                                       | Fix                                                    |
+| --------------------------------------------- | ------------------------------------------------------ |
+| `OSError: Cannot find libmpv`                 | Install `libmpv2` (or `libmpv1`)                       |
+| `Could not load the Qt platform plugin "xcb"` | Install `libxcb-cursor0`                               |
+| Camera stays on `connecting...`               | Check the URL, then try enabling **Relay**             |
+| Black screen with audio only                  | Check the `[mpv/...]` messages printed in the terminal |
 
 ## License
 
