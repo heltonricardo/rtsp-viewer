@@ -11,10 +11,10 @@ from .proxy import RtspFixProxy
 POLL_MS = 1000
 DEAD_TICKS = 5
 STUCK_TICKS = 15
-CATCHUP_START = 2.0
-CATCHUP_STOP = 0.5
+CATCHUP_START = 3.0
+CATCHUP_STOP = 0.8
 CATCHUP_SPEED = 1.15
-LAG_RESTART = 15.0
+LAG_RESTART = 20.0
 VOLUME_MAX = 200
 
 
@@ -109,11 +109,11 @@ class CameraWidget(QWidget):
             gpu_context="x11egl",
             idle=True,
             volume=self.volume,
-            hwdec="no",
-            cache="no",
+            hwdec="auto-safe",
+            cache="yes",
             cache_pause="no",
-            demuxer_readahead_secs=1.0,
-            demuxer_max_bytes="2MiB",
+            demuxer_readahead_secs=2.0,
+            demuxer_max_bytes="16MiB",
             volume_max=VOLUME_MAX,
             osc=False,
             osd_level=0,
