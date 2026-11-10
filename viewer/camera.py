@@ -1,3 +1,4 @@
+import time
 from urllib.parse import urlsplit, urlunsplit
 
 import mpv
@@ -16,10 +17,11 @@ CATCHUP_STOP = 0.8
 CATCHUP_SPEED = 1.15
 LAG_RESTART = 20.0
 VOLUME_MAX = 500
+T0 = time.monotonic()
 
 
 def log_handler(level, prefix, text):
-    print(f"[mpv/{prefix}] {text}", end="", flush=True)
+    print(f"{time.monotonic() - T0:7.2f} [mpv/{prefix}] {text}", end="", flush=True)
 
 
 class SelectionBox(QWidget):
@@ -74,6 +76,14 @@ class CameraWidget(QWidget):
         self.video.setMinimumSize(160, 90)
         self.video.installEventFilter(self)
 
+        self.overlay = QLabel(self)
+        self.overlay.setAttribute(Qt.WA_NativeWindow)
+        self.overlay.setAlignment(Qt.AlignCenter)
+        self.overlay.setStyleSheet(
+            "background: black; color: #cccccc; font-size: 20px;"
+        )
+        self.overlay.installEventFilter(self)
+
         self.label = QLabel()
         self.label.setStyleSheet(
             "padding: 8px 4px; border-bottom: 1px solid palette(mid);"
@@ -95,6 +105,7 @@ class CameraWidget(QWidget):
 
     def showEvent(self, ev):
         super().showEvent(ev)
+        self._update_overlay()
         if self.player is None:
             QTimer.singleShot(0, self._ensure_player)
 
@@ -243,6 +254,19 @@ class CameraWidget(QWidget):
         icon = "🔇" if self.volume == 0 else "🔊"
         relay = "\nrelay" if self.relay else ""
         self.label.setText(f"{self.name}\n{icon} {self.volume}%\n{self.state}{relay}")
+        self._update_overlay()
+
+    def _update_overlay(self):
+        show = self.state != "live" and (
+            not self.was_live or self.state == "disconnected"
+        )
+        self.overlay.setText(self.state)
+        if show:
+            self.overlay.setGeometry(self.video.geometry())
+            self.overlay.show()
+            self.overlay.raise_()
+        else:
+            self.overlay.hide()
 
     def set_focused(self, value):
         self.focused = value
@@ -309,7 +333,9 @@ class CameraWidget(QWidget):
             self.player = None
 
     def eventFilter(self, obj, ev):
-        if obj is self.video:
+        if obj is self.video and ev.type() in (QEvent.Resize, QEvent.Move):
+            self.overlay.setGeometry(self.video.geometry())
+        if obj is self.video or obj is self.overlay:
             t = ev.type()
             if t == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
                 if not self.focused:
