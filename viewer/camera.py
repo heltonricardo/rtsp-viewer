@@ -11,6 +11,10 @@ from .proxy import RtspFixProxy
 POLL_MS = 1000
 DEAD_TICKS = 5
 STUCK_TICKS = 15
+CATCHUP_START = 1.0
+CATCHUP_STOP = 0.3
+CATCHUP_SPEED = 1.15
+LAG_RESTART = 15.0
 
 
 def log_handler(level, prefix, text):
@@ -106,6 +110,11 @@ class CameraWidget(QWidget):
             volume=self.volume,
             hwdec="no",
             cache="no",
+            cache_pause="no",
+            demuxer_readahead_secs=0.5,
+            demuxer_max_bytes="2MiB",
+            audio_buffer=0.1,
+            video_latency_hacks="yes",
             osc=False,
             osd_level=0,
             input_default_bindings=False,
@@ -113,7 +122,7 @@ class CameraWidget(QWidget):
             input_cursor=False,
             cursor_autohide="no",
             network_timeout=10,
-            demuxer_lavf_o="rtsp_transport=tcp",
+            demuxer_lavf_o="rtsp_transport=tcp,fflags=+nobuffer,flags=+low_delay",
             demuxer_lavf_analyzeduration=5,
             demuxer_lavf_probesize=10000000,
         )
@@ -162,6 +171,11 @@ class CameraWidget(QWidget):
 
     def start(self):
         self.reset_zoom()
+        if self.player is not None:
+            try:
+                self.player.speed = 1.0
+            except Exception:
+                pass
         self.idle = 0
         self.was_live = False
         if not self.url or self.fatal:
@@ -174,6 +188,23 @@ class CameraWidget(QWidget):
         self._refresh_label()
         if self.player is not None:
             self.player.play(self.target)
+
+    def _catch_up(self):
+        try:
+            pos = self.player.time_pos
+            end = self.player.demuxer_cache_time
+            speed = self.player.speed
+        except Exception:
+            return
+        if pos is None or end is None:
+            return
+        lag = end - pos
+        if lag > LAG_RESTART:
+            self.start()
+        elif lag > CATCHUP_START and speed == 1.0:
+            self.player.speed = CATCHUP_SPEED
+        elif lag < CATCHUP_STOP and speed != 1.0:
+            self.player.speed = 1.0
 
     def _poll(self):
         if not self.url or self.fatal or self.player is None:
@@ -199,6 +230,7 @@ class CameraWidget(QWidget):
             self.idle = 0
             self.was_live = True
             self.state = "live"
+            self._catch_up()
         self._refresh_label()
 
     def set_volume(self, value):
