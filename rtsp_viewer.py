@@ -15,7 +15,7 @@ os.environ.pop("WAYLAND_DISPLAY", None)
 
 import mpv
 from PySide6.QtCore import QEvent, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QRadioButton,
-    QRubberBand,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -294,6 +293,30 @@ class RtspFixProxy:
             pass
 
 
+class SelectionBox(QWidget):
+    def __init__(self):
+        super().__init__(
+            None,
+            Qt.Tool
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowTransparentForInput
+            | Qt.X11BypassWindowManagerHint,
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(255, 255, 255), 2))
+        p.drawRect(self.rect().adjusted(1, 1, -1, -1))
+        pen = QPen(QColor(0, 0, 0), 1, Qt.DashLine)
+        p.setPen(pen)
+        p.drawRect(self.rect().adjusted(1, 1, -1, -1))
+
+
 class CameraWidget(QWidget):
     def __init__(self, on_click, parent=None):
         super().__init__(parent)
@@ -314,7 +337,7 @@ class CameraWidget(QWidget):
         self.zoomed = False
         self.press_pos = None
         self.dragging = False
-        self.band = QRubberBand(QRubberBand.Rectangle)
+        self.band = SelectionBox()
 
         self.video = QFrame()
         self.video.setStyleSheet("background: black;")
