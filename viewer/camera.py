@@ -11,10 +11,11 @@ from .proxy import RtspFixProxy
 POLL_MS = 1000
 DEAD_TICKS = 5
 STUCK_TICKS = 15
-CATCHUP_START = 1.0
-CATCHUP_STOP = 0.3
+CATCHUP_START = 2.0
+CATCHUP_STOP = 0.5
 CATCHUP_SPEED = 1.15
 LAG_RESTART = 15.0
+VOLUME_MAX = 200
 
 
 def log_handler(level, prefix, text):
@@ -111,10 +112,9 @@ class CameraWidget(QWidget):
             hwdec="no",
             cache="no",
             cache_pause="no",
-            demuxer_readahead_secs=0.5,
+            demuxer_readahead_secs=1.0,
             demuxer_max_bytes="2MiB",
-            audio_buffer=0.1,
-            video_latency_hacks="yes",
+            volume_max=VOLUME_MAX,
             osc=False,
             osd_level=0,
             input_default_bindings=False,
@@ -122,7 +122,7 @@ class CameraWidget(QWidget):
             input_cursor=False,
             cursor_autohide="no",
             network_timeout=10,
-            demuxer_lavf_o="rtsp_transport=tcp,fflags=+nobuffer,flags=+low_delay",
+            demuxer_lavf_o="rtsp_transport=tcp",
             demuxer_lavf_analyzeduration=5,
             demuxer_lavf_probesize=10000000,
         )
@@ -234,7 +234,7 @@ class CameraWidget(QWidget):
         self._refresh_label()
 
     def set_volume(self, value):
-        self.volume = max(0, min(100, value))
+        self.volume = max(0, min(VOLUME_MAX, value))
         if self.player is not None:
             self.player.volume = self.volume
         self._refresh_label()
